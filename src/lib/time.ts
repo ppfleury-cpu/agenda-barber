@@ -1,9 +1,47 @@
-// Datas e horas no fuso de Brasília (America/Sao_Paulo).
-// O Brasil não usa horário de verão desde 2019, então o deslocamento fixo de -03:00 é seguro.
+// Datas e horas no fuso de cada negócio (padrão: Brasília).
 // Datas são sempre texto "AAAA-MM-DD" e horas são minutos desde a meia-noite.
+// O deslocamento do fuso é calculado pelo próprio Intl, então funciona para Manaus (-04),
+// Rio Branco (-05), Noronha (-02) e para qualquer mudança futura de horário de verão.
 
-export const TZ = 'America/Sao_Paulo';
-const OFFSET = '-03:00';
+export const DEFAULT_TZ = 'America/Sao_Paulo';
+/** @deprecated use DEFAULT_TZ ou o fuso da barbearia */
+export const TZ = DEFAULT_TZ;
+
+/** Fusos do Brasil que o dono pode escolher. */
+export const TIMEZONES: { id: string; label: string }[] = [
+  { id: 'America/Sao_Paulo', label: 'Brasília (DF, GO, SP, RJ, MG, ES, Sul, Nordeste, PA, AP, TO)' },
+  { id: 'America/Manaus', label: 'Amazonas, Roraima e Rondônia (1h a menos)' },
+  { id: 'America/Cuiaba', label: 'Mato Grosso e Mato Grosso do Sul (1h a menos)' },
+  { id: 'America/Rio_Branco', label: 'Acre e oeste do Amazonas (2h a menos)' },
+  { id: 'America/Noronha', label: 'Fernando de Noronha (1h a mais)' },
+];
+
+export const isValidTimezone = (tz: unknown): tz is string => typeof tz === 'string' && TIMEZONES.some((t) => t.id === tz);
+const tzOf = (tz?: string | null) => (tz && isValidTimezone(tz) ? tz : DEFAULT_TZ);
+
+const formatters = new Map<string, Intl.DateTimeFormat>();
+function formatter(tz: string): Intl.DateTimeFormat {
+  let f = formatters.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    });
+    formatters.set(tz, f);
+  }
+  return f;
+}
+
+function wallClock(ms: number, tz: string) {
+  const parts = formatter(tz).formatToParts(new Date(ms));
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? '0');
+  return { y: get('year'), mo: get('month'), d: get('day'), h: get('hour'), mi: get('minute'), s: get('second') };
+}
+
+/** Quantos ms o relógio local está à frente do UTC naquele instante (Brasília: -3h). */
+function offsetMs(ms: number, tz: string): number {
+  const w = wallClock(ms, tz);
+  return Date.UTC(w.y, w.mo - 1, w.d, w.h, w.mi, w.s) - Math.floor(ms / 1000) * 1000;
+}
 
 export const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -49,28 +87,24 @@ export function weekday(date: string): number {
   return new Date(`${date}T00:00:00Z`).getUTCDay();
 }
 
-/** Momento exato (Date) de uma data + minutos do dia, no horário de Brasília. */
-export function localToDate(date: string, minutes: number): Date {
-  return new Date(`${date}T${fromMin(minutes)}:00${OFFSET}`);
+/** Momento exato (Date) de uma data + minutos do dia, no fuso do negócio. */
+export function localToDate(date: string, minutes: number, tz?: string | null): Date {
+  const zone = tzOf(tz);
+  const [y, m, d] = date.split('-').map(Number);
+  const asUtc = Date.UTC(y, m - 1, d, 0, minutes);
+  const first = asUtc - offsetMs(asUtc, zone);
+  const second = asUtc - offsetMs(first, zone); // corrige se o palpite caiu do outro lado de uma troca de horário
+  return new Date(second);
 }
 
-/** Data e minutos do dia, em Brasília, de um instante qualquer. */
-export function localParts(at: Date = new Date()): { date: string; minutes: number } {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: TZ,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(at);
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '00';
-  return { date: `${get('year')}-${get('month')}-${get('day')}`, minutes: Number(get('hour')) * 60 + Number(get('minute')) };
+/** Data e minutos do dia, no fuso do negócio, de um instante qualquer. */
+export function localParts(at: Date = new Date(), tz?: string | null): { date: string; minutes: number } {
+  const w = wallClock(at.getTime(), tzOf(tz));
+  return { date: `${w.y}-${pad(w.mo)}-${pad(w.d)}`, minutes: w.h * 60 + w.mi };
 }
 
-export function todayLocal(at: Date = new Date()): string {
-  return localParts(at).date;
+export function todayLocal(at: Date = new Date(), tz?: string | null): string {
+  return localParts(at, tz).date;
 }
 
 const WD_SHORT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
@@ -96,14 +130,14 @@ export function longDayLabel(date: string, today: string): string {
 }
 
 /** Hora local "HH:MM" de um instante ISO. */
-export function timeOf(iso: string | Date): string {
-  const { minutes } = localParts(typeof iso === 'string' ? new Date(iso) : iso);
+export function timeOf(iso: string | Date, tz?: string | null): string {
+  const { minutes } = localParts(typeof iso === 'string' ? new Date(iso) : iso, tz);
   return fromMin(minutes);
 }
 
 /** Data local "AAAA-MM-DD" de um instante ISO. */
-export function dateOf(iso: string | Date): string {
-  return localParts(typeof iso === 'string' ? new Date(iso) : iso).date;
+export function dateOf(iso: string | Date, tz?: string | null): string {
+  return localParts(typeof iso === 'string' ? new Date(iso) : iso, tz).date;
 }
 
 export function brl(cents: number): string {

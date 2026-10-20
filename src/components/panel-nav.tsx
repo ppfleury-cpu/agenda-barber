@@ -8,6 +8,7 @@ const ITEMS = [
   { href: '/painel/servicos', label: 'Serviços' },
   { href: '/painel/equipe', label: 'Equipe' },
   { href: '/painel/clientes', label: 'Clientes' },
+  { href: '/painel/relatorios', label: 'Relatórios' },
   { href: '/painel/aparencia', label: 'Aparência' },
   { href: '/painel/configuracoes', label: 'Configurações' },
   { href: '/painel/assinatura', label: 'Assinatura' },

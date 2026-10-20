@@ -23,7 +23,7 @@ const mockFetch = (status = 200) => {
 };
 const book = (over: Record<string, unknown> = {}) =>
   createBooking(admin, shop, {
-    serviceId: SERVICE, professionalId: 'any', date: tomorrow(), time: '10:00', name: 'Lucas Almeida', phone: '(62) 91234-5678', consent: true, ...over,
+    serviceIds: [SERVICE], professionalId: 'any', date: tomorrow(), time: '10:00', name: 'Lucas Almeida', phone: '(62) 91234-5678', consent: true, ...over,
   } as any, { source: 'online', minLeadMin: 15, maxDaysAhead: 13 });
 
 beforeEach(() => {
@@ -37,6 +37,7 @@ beforeEach(() => {
     open_time: '09:00:00', close_time: '19:00:00', open_days: [0, 1, 2, 3, 4, 5, 6], slot_minutes: 30, whatsapp_enabled: true,
     suspended: false, trial_ends_at: new Date(Date.now() + 5 * 86_400_000).toISOString(), paid_until: null,
     niche: 'barbearia', theme: 'classico', welcome_text: null, logo_path: null, cover_path: null,
+    timezone: 'America/Sao_Paulo', booking_window_days: 14, min_lead_min: 15, cancel_hours: 2, reminder_day_before: true, reminder_lead_min: 120,
   };
   db.tables.shops.push({ ...shop });
   db.tables.professionals.push(
@@ -50,7 +51,7 @@ beforeEach(() => {
 });
 
 test('disponibilidade: 14 dias, horários livres e ocupados', async () => {
-  const r = await getAvailability(admin, shop, { serviceId: SERVICE, professionalId: 'any', days: 14, minLeadMin: 15 });
+  const r = await getAvailability(admin, shop, { serviceIds: [SERVICE], professionalId: 'any', days: 14, minLeadMin: 15 });
   assert.ok(r.ok);
   if (!r.ok) return;
   assert.equal(Object.keys(r.days).length, 14);
@@ -58,10 +59,10 @@ test('disponibilidade: 14 dias, horários livres e ocupados', async () => {
   assert.ok(!r.days[tomorrow()].includes('18:45'));
   assert.ok(r.days[tomorrow()].includes('18:30'));
   // serviço de 60 min não começa às 18:30
-  const r60 = await getAvailability(admin, shop, { serviceId: SERVICE60, professionalId: 'any', days: 14, minLeadMin: 15 });
+  const r60 = await getAvailability(admin, shop, { serviceIds: [SERVICE60], professionalId: 'any', days: 14, minLeadMin: 15 });
   assert.ok(r60.ok && !r60.days[tomorrow()].includes('18:30') && r60.days[tomorrow()].includes('18:00'));
   // serviço inexistente
-  const bad = await getAvailability(admin, shop, { serviceId: 'nope', professionalId: 'any', days: 14, minLeadMin: 15 });
+  const bad = await getAvailability(admin, shop, { serviceIds: ['nope'], professionalId: 'any', days: 14, minLeadMin: 15 });
   assert.equal(bad.ok, false);
 });
 
@@ -78,10 +79,10 @@ test('agendar: cria cliente e horário, e o horário some da disponibilidade', a
   const a = db.tables.appointments[0];
   assert.equal(a.price_cents, 4500);
   assert.equal(a.source, 'online');
-  const avail = await getAvailability(admin, shop, { serviceId: SERVICE, professionalId: P1, days: 14, minLeadMin: 15 });
+  const avail = await getAvailability(admin, shop, { serviceIds: [SERVICE], professionalId: P1, days: 14, minLeadMin: 15 });
   assert.ok(avail.ok && !avail.days[tomorrow()].includes('10:00') && avail.days[tomorrow()].includes('10:30'));
   // com "qualquer um", o 10:00 continua livre porque Rafael está livre
-  const any = await getAvailability(admin, shop, { serviceId: SERVICE, professionalId: 'any', days: 14, minLeadMin: 15 });
+  const any = await getAvailability(admin, shop, { serviceIds: [SERVICE], professionalId: 'any', days: 14, minLeadMin: 15 });
   assert.ok(any.ok && any.days[tomorrow()].includes('10:00'));
 });
 
@@ -96,7 +97,7 @@ test('agendar: horário já ocupado vira conflito, e "qualquer um" distribui ent
   const d = await book({ professionalId: 'any', phone: '62977776666', name: 'Terceiro' });
   assert.equal(d.ok, false); // os dois ocupados
   // horário sobreposto de serviço longo: 09:30 + 60 min invade o das 10:00
-  const e = await book({ serviceId: SERVICE60, professionalId: P1, time: '09:30', phone: '62966665555', name: 'Quarto' });
+  const e = await book({ serviceIds: [SERVICE60], professionalId: P1, time: '09:30', phone: '62966665555', name: 'Quarto' });
   assert.equal(e.ok, false);
 });
 
@@ -116,7 +117,7 @@ test('agendar: validações', async () => {
   assert.match((await book({ date: addDays(todayLocal(), 40) }) as any).error, /não está disponível/);
   assert.match((await book({ date: '2026-02-30' }) as any).error, /inválido/);
   assert.match((await book({ time: '25:00' }) as any).error, /inválido/);
-  assert.match((await book({ serviceId: 'nope' }) as any).error, /Serviço/);
+  assert.match((await book({ serviceIds: ['nope'] }) as any).error, /Serviço/);
   assert.equal((await book({ time: '03:00' }) as any).conflict, true); // fora do expediente
   assert.equal(db.tables.appointments.length, 0);
 });
@@ -126,7 +127,7 @@ test('agendar: domingo fechado e folga do profissional', async () => {
   shop = { ...shop, open_days: [1, 2, 3, 4, 5, 6] };
   let sunday = tomorrow();
   while (new Date(`${sunday}T12:00:00Z`).getUTCDay() !== 0) sunday = addDays(sunday, 1);
-  const r = await createBooking(admin, shop, { serviceId: SERVICE, professionalId: 'any', date: sunday, time: '10:00', name: 'Lucas', phone: '62912345678', consent: true }, { source: 'online', minLeadMin: 15, maxDaysAhead: 13 });
+  const r = await createBooking(admin, shop, { serviceIds: [SERVICE], professionalId: 'any', date: sunday, time: '10:00', name: 'Lucas', phone: '62912345678', consent: true }, { source: 'online', minLeadMin: 15, maxDaysAhead: 13 });
   assert.equal(r.ok, false);
   // Rafael de folga em todos os dias: só Carlos atende
   db.tables.professionals[1].work_days = [];
@@ -163,12 +164,12 @@ test('agendar: limite de 3 horários futuros por telefone', async () => {
 
 test('agendar: barbearia sem acesso (teste vencido ou suspensa) não recebe agendamento', async () => {
   const expired = { ...shop, trial_ends_at: new Date(Date.now() - 86_400_000).toISOString() };
-  const r1 = await createBooking(admin, expired, { serviceId: SERVICE, professionalId: 'any', date: tomorrow(), time: '10:00', name: 'Lucas', phone: '62912345678', consent: true }, { source: 'online', minLeadMin: 15, maxDaysAhead: 13 });
+  const r1 = await createBooking(admin, expired, { serviceIds: [SERVICE], professionalId: 'any', date: tomorrow(), time: '10:00', name: 'Lucas', phone: '62912345678', consent: true }, { source: 'online', minLeadMin: 15, maxDaysAhead: 13 });
   assert.equal(r1.ok, false);
-  const av = await getAvailability(admin, { ...shop, suspended: true }, { serviceId: SERVICE, professionalId: 'any', days: 14, minLeadMin: 15 });
+  const av = await getAvailability(admin, { ...shop, suspended: true }, { serviceIds: [SERVICE], professionalId: 'any', days: 14, minLeadMin: 15 });
   assert.equal(av.ok, false);
   const paid = { ...expired, paid_until: new Date(Date.now() + 10 * 86_400_000).toISOString() };
-  const r2 = await createBooking(admin, paid, { serviceId: SERVICE, professionalId: 'any', date: tomorrow(), time: '10:00', name: 'Lucas', phone: '62912345678', consent: true }, { source: 'online', minLeadMin: 15, maxDaysAhead: 13 });
+  const r2 = await createBooking(admin, paid, { serviceIds: [SERVICE], professionalId: 'any', date: tomorrow(), time: '10:00', name: 'Lucas', phone: '62912345678', consent: true }, { source: 'online', minLeadMin: 15, maxDaysAhead: 13 });
   assert.ok(r2.ok);
 });
 
@@ -181,7 +182,7 @@ test('WhatsApp: confirmação sai na hora com os 7 parâmetros certos', async ()
   assert.equal(fetchCalls.length, 1);
   const body = fetchCalls[0].body;
   assert.equal(body.to, '5562912345678');
-  assert.equal(body.template.name, 'agendamento_confirmado');
+  assert.equal(body.template.name, 'agendamento_confirmado_v2');
   const params = body.template.components[0].parameters.map((p: any) => p.text);
   assert.deepEqual(params.slice(0, 4), ['Lucas', 'Barbearia do João', 'Corte masculino', 'Carlos']);
   assert.equal(params[5], '10:00');
@@ -196,7 +197,7 @@ test('WhatsApp: sem consentimento, desligado na barbearia ou conta vencida, não
   const r1 = await book({ consent: false });
   assert.ok(r1.ok && r1.whatsapp === 'off');
   const off = { ...shop, whatsapp_enabled: false };
-  const r2 = await createBooking(admin, off, { serviceId: SERVICE, professionalId: 'any', date: tomorrow(), time: '11:00', name: 'Lucas', phone: '62900003333', consent: true }, { source: 'online', minLeadMin: 15, maxDaysAhead: 13 });
+  const r2 = await createBooking(admin, off, { serviceIds: [SERVICE], professionalId: 'any', date: tomorrow(), time: '11:00', name: 'Lucas', phone: '62900003333', consent: true }, { source: 'online', minLeadMin: 15, maxDaysAhead: 13 });
   assert.ok(r2.ok && r2.whatsapp === 'off');
   assert.equal(fetchCalls.length, 0);
 });

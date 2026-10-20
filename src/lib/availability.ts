@@ -6,9 +6,19 @@ export type ShopHours = {
   close_time: string;
   open_days: number[];
   slot_minutes: number;
+  timezone?: string | null;
 };
 
-export type Pro = { id: string; work_days: number[] };
+/** Profissional. Horários vazios = segue o horário do negócio; almoço vazio = sem almoço fixo. */
+export type Pro = {
+  id: string;
+  work_days: number[];
+  start_time?: string | null;
+  end_time?: string | null;
+  break_start?: string | null;
+  break_end?: string | null;
+  service_ids?: string[] | null;
+};
 
 /** Intervalo ocupado. professional_id nulo = barbearia inteira (bloqueio geral). */
 export type Busy = { professional_id: string | null; start: number; end: number; kind: 'appt' | 'block' };
@@ -16,6 +26,19 @@ export type Busy = { professional_id: string | null; start: number; end: number;
 export const overlaps = (aStart: number, aEnd: number, bStart: number, bEnd: number) => aStart < bEnd && bStart < aEnd;
 
 export type FreeSlot = { time: string; proIds: string[] };
+
+/** Faz todos estes serviços? (lista vazia no profissional = faz todos) */
+export function proDoesAll(p: Pick<Pro, 'service_ids'>, serviceIds: string[]): boolean {
+  if (!p.service_ids || p.service_ids.length === 0) return true;
+  return serviceIds.every((id) => p.service_ids!.includes(id));
+}
+
+/** Janela de trabalho do profissional no dia, em minutos, já cortada pelo horário do negócio. */
+export function proWindow(shop: ShopHours, p: Pro): [number, number] | null {
+  const from = Math.max(toMin(shop.open_time), p.start_time ? toMin(p.start_time) : 0);
+  const to = Math.min(toMin(shop.close_time), p.end_time ? toMin(p.end_time) : 24 * 60);
+  return from < to ? [from, to] : null;
+}
 
 /** Horários de um dia, com os profissionais livres em cada um. */
 export function slotsForDay(args: {
@@ -34,22 +57,29 @@ export function slotsForDay(args: {
   const close = toMin(shop.close_time);
   const step = shop.slot_minutes;
   const earliest = now.getTime() + minLeadMin * 60_000;
-  const working = pros.filter((p) => p.work_days.includes(wd));
+  const working = pros
+    .filter((p) => p.work_days.includes(wd))
+    .map((p) => ({
+      p,
+      win: proWindow(shop, p),
+      brk: p.break_start && p.break_end ? ([toMin(p.break_start), toMin(p.break_end)] as const) : null,
+    }));
   const out: FreeSlot[] = [];
   for (let t = open; t + durationMin <= close; t += step) {
-    const start = localToDate(date, t).getTime();
+    const start = localToDate(date, t, shop.timezone).getTime();
     const end = start + durationMin * 60_000;
     const proIds =
       start < earliest
         ? []
         : working
-            .filter(
-              (p) =>
-                !busy.some(
-                  (b) => (b.professional_id === null || b.professional_id === p.id) && overlaps(start, end, b.start, b.end),
-                ),
-            )
-            .map((p) => p.id);
+            .filter(({ p, win, brk }) => {
+              if (!win || t < win[0] || t + durationMin > win[1]) return false;
+              if (brk && overlaps(t, t + durationMin, brk[0], brk[1])) return false;
+              return !busy.some(
+                (b) => (b.professional_id === null || b.professional_id === p.id) && overlaps(start, end, b.start, b.end),
+              );
+            })
+            .map(({ p }) => p.id);
     out.push({ time: fromMin(t), proIds });
   }
   return out;
@@ -97,11 +127,11 @@ export function freeTimesByDay(args: {
   return result;
 }
 
-/** Início e fim (em ms) do dia local, para buscar o que já está ocupado. */
-export function dayWindow(fromDate: string, days: number): { start: Date; end: Date } {
-  return { start: localToDate(fromDate, 0), end: localToDate(addDays(fromDate, days), 0) };
+/** Início e fim (instantes) dos dias locais, para buscar o que já está ocupado. */
+export function dayWindow(fromDate: string, days: number, tz?: string | null): { start: Date; end: Date } {
+  return { start: localToDate(fromDate, 0, tz), end: localToDate(addDays(fromDate, days), 0, tz) };
 }
 
-export function todayParts(now: Date = new Date()) {
-  return localParts(now);
+export function todayParts(now: Date = new Date(), tz?: string | null) {
+  return localParts(now, tz);
 }

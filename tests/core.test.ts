@@ -168,7 +168,9 @@ test('whatsapp: parâmetros e envio', async () => {
   assert.deepEqual(confirmationParams(d), ['Lucas', 'Barbearia do João', 'Corte', 'Carlos', 'quarta-feira, 21/10', '14:30', '(62) 91234-5678']);
   assert.equal(confirmationParams({ ...d, shopContact: undefined })[6], 'Barbearia do João');
   assert.deepEqual(reminderParams(d), ['Lucas', 'Barbearia do João', 'Corte', '14:30']);
-  assert.match(confirmationText(d), /Seu horário em Barbearia do João está confirmado: Corte com Carlos, quarta-feira, 21\/10 às 14:30\. Para remarcar ou cancelar, fale pelo contato: \(62\) 91234-5678\./);
+  assert.match(confirmationText(d), /Seu horário em Barbearia do João está confirmado: Corte com Carlos, quarta-feira, 21\/10 às 14:30\. Para confirmar presença, remarcar ou cancelar: \(62\) 91234-5678$/);
+  // com o link do cliente, o link entra no lugar do contato
+  assert.equal(confirmationParams({ ...d, manageUrl: 'https://agenda.app/m/abc' })[6], 'https://agenda.app/m/abc');
 
   // sem configuração: não envia e explica
   delete process.env.WHATSAPP_TOKEN;
