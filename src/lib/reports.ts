@@ -11,9 +11,23 @@ export type ReportAppt = {
   source: 'online' | 'painel' | string;
 };
 
+/** Quantos horários em cada situação. "booked" = marcados e não cancelados. */
+export type StatusCounts = { booked: number; confirmed: number; done: number; noshow: number; cancelled: number; online: number; painel: number };
+const emptyCounts = (): StatusCounts => ({ booked: 0, confirmed: 0, done: 0, noshow: 0, cancelled: 0, online: 0, painel: 0 });
+
+export type ReportDay = {
+  date: string;
+  revenue: number; // concluídos
+  count: number; // concluídos
+  expected: number; // confirmados que ainda não viraram concluídos
+  counts: StatusCounts;
+};
+
 export type Report = {
-  days: { date: string; revenue: number; count: number }[];
+  days: ReportDay[];
+  counts: StatusCounts;
   revenue: number;
+  expected: number; // a receber: confirmados no período
   done: number;
   ticket: number;
   noshow: number;
@@ -27,8 +41,10 @@ export type Report = {
 
 /** Faturamento = atendimentos concluídos. Os dias vão de `from` até `to` (inclusive). */
 export function buildReport(appts: ReportAppt[], from: string, to: string, tz?: string | null): Report {
-  const days: Report['days'] = [];
-  for (let d = from; d <= to; d = addDays(d, 1)) days.push({ date: d, revenue: 0, count: 0 });
+  const days: ReportDay[] = [];
+  for (let d = from; d <= to; d = addDays(d, 1)) days.push({ date: d, revenue: 0, count: 0, expected: 0, counts: emptyCounts() });
+  const counts = emptyCounts();
+  let expected = 0;
   const dayIdx = new Map(days.map((d, i) => [d.date, i]));
   const bySvc = new Map<string, { name: string; count: number; revenue: number }>();
   const byPro = new Map<string, { id: string; count: number; revenue: number; minutes: number; noshow: number }>();
@@ -39,6 +55,16 @@ export function buildReport(appts: ReportAppt[], from: string, to: string, tz?: 
     if (i === undefined) continue;
     total++;
     if (a.source === 'online') online++;
+    for (const c of [counts, days[i].counts]) {
+      c[a.status]++;
+      if (a.status !== 'cancelled') c.booked++;
+      if (a.source === 'online') c.online++;
+      else c.painel++;
+    }
+    if (a.status === 'confirmed') {
+      expected += a.price_cents;
+      days[i].expected += a.price_cents;
+    }
     const pro = byPro.get(a.professional_id) ?? { id: a.professional_id, count: 0, revenue: 0, minutes: 0, noshow: 0 };
     if (a.status === 'done') {
       done++;
@@ -62,7 +88,7 @@ export function buildReport(appts: ReportAppt[], from: string, to: string, tz?: 
   }
   const notCancelled = total - cancelled;
   return {
-    days, revenue, done,
+    days, counts, revenue, expected, done,
     ticket: done ? Math.round(revenue / done) : 0,
     noshow,
     noshowRate: notCancelled ? noshow / notCancelled : 0,

@@ -251,3 +251,24 @@ td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
 .blk { position: absolute; left: 4px; right: 4px; border-radius: 8px; padding: 3px 8px; font-size: 12.5px; color: var(--muted); pointer-events: none;
   background: repeating-linear-gradient(135deg, var(--soft) 0 6px, var(--surface) 6px 12px); border: 1px solid var(--line); }
 .nowline { position: absolute; left: 0; right: 0; height: 0; border-top: 2px solid var(--bad-text); z-index: 3; pointer-events: none; }
+
+/* ---- Relatórios ---- */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+.tabs a { border-bottom: 3px solid transparent; padding: 8px 14px 7px; font: 700 17px var(--f-display); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); text-decoration: none; }
+.tabs a[aria-current='page'] { color: var(--ink); border-bottom-color: var(--accent); }
+tfoot td { font-weight: 700; border-top: 2px solid var(--line); }
+tr.today td { background: var(--sel-bg); }
+tr.daystart td { border-top: 2px solid var(--line); }
+td .sub { display: block; font-size: 12.5px; color: var(--muted); }
+.card h3 small { margin-left: 6px; }
+
+@media print {
+  :root { color-scheme: light; }
+  body { background: #fff; color: #000; padding: 0; }
+  .nav, .no-print, .top .row, .pole, .flash.ok { display: none !important; }
+  .panel { padding-top: 8px; gap: 14px; }
+  .card, .stats { break-inside: avoid; border-color: #bbb; }
+  .stat, .card { background: #fff; }
+  .table-wrap { overflow: visible; }
+  a { color: inherit; text-decoration: none; }
+}
