@@ -14,7 +14,8 @@ import type { Professional } from '@/lib/types';
 
 export const metadata: Metadata = { title: 'Relatórios' };
 
-const LIST_LIMIT = 500; // acima disso a lista fica pesada na tela; a planilha traz todos
+// A lista na tela vai em páginas de 100 (página muito grande fica lenta no celular); a planilha traz todos.
+const LIST_PAGE = 100;
 const pct = (x: number) => `${(x * 100).toFixed(x < 0.1 && x > 0 ? 1 : 0).replace('.', ',')}%`;
 const reais = (c: number) => brl(c).replace(/,00$/, '');
 const dm = (d: string) => `${weekdayShort(weekday(d))} ${dayMonth(d)}`;
@@ -28,7 +29,7 @@ function Change({ now, before, money }: { now: number; before: number; money?: b
 }
 
 type Tipo = 'agendamentos' | 'faturamento';
-type SP = { tipo?: string; p?: string; d?: string };
+type SP = { tipo?: string; p?: string; d?: string; lp?: string };
 
 export default async function ReportsPage({ searchParams }: { searchParams: Promise<SP> }) {
   const { supabase, shop } = await requireActiveShop();
@@ -50,9 +51,12 @@ export default async function ReportsPage({ searchParams }: { searchParams: Prom
   const r = buildReport(rows, period.from, period.to, tz);
   const prev = buildReport(all, prevPeriod.from, prevPeriod.to, tz);
   const proName = (id: string) => pros.find((p) => p.id === id)?.name ?? 'Profissional';
+  const pages = Math.max(1, Math.ceil(rows.length / LIST_PAGE));
+  const listPage = Math.min(Math.max(0, Math.floor(Number(sp.lp) || 0)), pages - 1);
 
-  const href = (o: Partial<{ tipo: Tipo; p: PeriodKind; d: string }>) => {
+  const href = (o: Partial<{ tipo: Tipo; p: PeriodKind; d: string; lp: string }>) => {
     const q = new URLSearchParams({ tipo, p: kind, d: ref, ...o });
+    if (!o.lp) q.delete('lp');
     if (q.get('tipo') === 'agendamentos') q.delete('tipo');
     if (q.get('p') === 'semana') q.delete('p');
     if (q.get('d') === today) q.delete('d');
@@ -104,7 +108,8 @@ export default async function ReportsPage({ searchParams }: { searchParams: Prom
       {truncated ? <p className="flash warn">Período com muitos agendamentos: os números mostram só parte dele. Escolha um período menor.</p> : null}
 
       {tipo === 'agendamentos'
-        ? <Appointments r={r} prev={prev} rows={rows} kind={kind} today={today} tz={tz} proName={proName} pros={pros} />
+        ? <Appointments r={r} prev={prev} rows={rows} kind={kind} today={today} tz={tz} proName={proName} pros={pros}
+            listPage={listPage} pages={pages} pageHref={(n) => `${href({ lp: n ? String(n) : '' })}#lista`} openList={sp.lp !== undefined} />
         : <Revenue r={r} prev={prev} rows={rows} kind={kind} today={today} tz={tz} proName={proName} pros={pros} shop={shop} from={period.from} to={period.to} />}
 
       <p className="note">Gerado em {dayMonth(today)}/{today.slice(0, 4)} às {timeOf(new Date(), tz)}. Horários no fuso {tz.replace('America/', '').replace('_', ' ')}.</p>
@@ -117,7 +122,9 @@ type Common = {
   proName: (id: string) => string; pros: Professional[];
 };
 
-function Appointments({ r, prev, rows, kind, today, tz, proName, pros }: Common) {
+function Appointments({ r, prev, rows, kind, today, tz, proName, pros, listPage, pages, pageHref, openList }: Common & {
+  listPage: number; pages: number; pageHref: (n: number) => string; openList: boolean;
+}) {
   const c = r.counts;
   const closed = c.done + c.noshow;
   const byPro = pros
@@ -127,7 +134,7 @@ function Appointments({ r, prev, rows, kind, today, tz, proName, pros }: Common)
       return { p, booked: mine.filter((x) => x.status !== 'cancelled').length, confirmed: n('confirmed'), done: n('done'), noshow: n('noshow'), cancelled: n('cancelled') };
     })
     .filter((x) => x.p.active || x.booked || x.cancelled);
-  const list = rows.slice(0, LIST_LIMIT);
+  const list = rows.slice(listPage * LIST_PAGE, (listPage + 1) * LIST_PAGE);
   let lastDay = '';
 
   return (
@@ -174,8 +181,8 @@ function Appointments({ r, prev, rows, kind, today, tz, proName, pros }: Common)
         </div>
       </section>
 
-      <section className="card">
-        <h3>Lista de agendamentos <small className="hint" style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>{rows.length} no período</small></h3>
+      <details className="card listcard" id="lista" open={kind === 'dia' || openList}>
+        <summary><h3>Lista de agendamentos <small className="hint" style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>{rows.length} no período{kind !== 'dia' && !openList ? ' · clique para abrir' : ''}</small></h3></summary>
         {rows.length ? (
           <div className="table-wrap">
             <table>
@@ -201,8 +208,15 @@ function Appointments({ r, prev, rows, kind, today, tz, proName, pros }: Common)
             </table>
           </div>
         ) : <p className="hint">Nenhum agendamento neste período.</p>}
-        {rows.length > LIST_LIMIT ? <p className="note">Mostrando os primeiros {LIST_LIMIT}. Baixe a planilha para ver todos os {rows.length}.</p> : null}
-      </section>
+        {pages > 1 ? (
+          <div className="row no-print">
+            {listPage > 0 ? <Link className="btn sm" href={pageHref(listPage - 1)}>← Anteriores</Link> : null}
+            <span className="hint">{listPage * LIST_PAGE + 1}–{Math.min((listPage + 1) * LIST_PAGE, rows.length)} de {rows.length}</span>
+            {listPage + 1 < pages ? <Link className="btn sm" href={pageHref(listPage + 1)}>Próximos →</Link> : null}
+            <span className="note">A planilha traz todos de uma vez.</span>
+          </div>
+        ) : null}
+      </details>
     </>
   );
 }

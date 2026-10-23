@@ -2,7 +2,7 @@
 import { toCsv, moneyCell, dateCell, type Cell } from './csv';
 import { dateOf, timeOf } from './time';
 import { weeksOf, type Period } from './periods';
-import type { Report } from './reports';
+import type { Report, ReportAppt } from './reports';
 
 export const STATUS_PT: Record<string, string> = { confirmed: 'Confirmado', done: 'Concluído', noshow: 'Faltou', cancelled: 'Cancelado' };
 
@@ -11,7 +11,7 @@ export type ExportRow = {
   ends_at: string;
   service_name: string;
   price_cents: number;
-  status: string;
+  status: ReportAppt['status'];
   source: string;
   clients: { name: string; phone: string } | null;
   professionals: { name: string } | null;
