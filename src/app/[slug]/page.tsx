@@ -6,10 +6,11 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { accessOf } from '@/lib/billing';
 import { PUBLIC_SHOP_COLUMNS, type PublicShop } from '@/lib/types';
 import { daysSummary, hourWord, weekdayShort } from '@/lib/time';
+import { brandName } from '@/lib/brand';
 import { maskPhone, waLink } from '@/lib/phone';
 import { BookingFlow, type FlowPro, type FlowService } from '@/components/booking-flow';
 import { assetUrl, terms } from '@/lib/themes';
-import { bookAction, getAvailabilityAction } from './actions';
+import { bookAction, getAvailabilityAction, joinWaitlistAction, requestCodeAction } from './actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -67,12 +68,21 @@ export default async function PublicShopPage({ params }: { params: Promise<{ slu
   const admin = createAdminClient();
   const [svcRes, proRes] = await Promise.all([
     admin.from('services').select('id, name, duration_min, price_cents').eq('shop_id', shop.id).eq('active', true).order('created_at'),
-    admin.from('professionals').select('id, name, work_days').eq('shop_id', shop.id).eq('active', true).order('created_at'),
+    admin
+      .from('professionals')
+      .select('id, name, work_days, start_time, end_time, service_ids')
+      .eq('shop_id', shop.id)
+      .eq('active', true)
+      .order('created_at'),
   ]);
   const services = (svcRes.data ?? []) as FlowService[];
-  const pros: FlowPro[] = ((proRes.data ?? []) as { id: string; name: string; work_days: number[] }[]).map((p) => {
+  type P = { id: string; name: string; work_days: number[]; start_time: string | null; end_time: string | null; service_ids: string[] | null };
+  const pros: FlowPro[] = ((proRes.data ?? []) as P[]).map((p) => {
     const off = shop.open_days.filter((d) => !p.work_days.includes(d)).map(weekdayShort);
-    return { id: p.id, name: p.name, off: off.length ? `Folga: ${off.join(', ')}` : '' };
+    const hours = p.start_time || p.end_time
+      ? `${hourWord((p.start_time ?? shop.open_time).slice(0, 5))} às ${hourWord((p.end_time ?? shop.close_time).slice(0, 5))}`
+      : '';
+    return { id: p.id, name: p.name, off: [off.length ? `Folga: ${off.join(', ')}` : '', hours].filter(Boolean).join(' · '), serviceIds: p.service_ids };
   });
 
   return (
@@ -85,8 +95,12 @@ export default async function PublicShopPage({ params }: { params: Promise<{ slu
             services={services}
             pros={pros}
             whatsappEnabled={shop.whatsapp_enabled}
+            cancelHours={shop.cancel_hours}
+            openDays={shop.open_days}
             loadAvailability={getAvailabilityAction.bind(null, shop.slug)}
             submit={bookAction.bind(null, shop.slug)}
+            requestCode={requestCodeAction.bind(null, shop.slug)}
+            joinWaitlist={joinWaitlistAction.bind(null, shop.slug)}
           />
         ) : (
           <div className="unavailable">
@@ -96,7 +110,7 @@ export default async function PublicShopPage({ params }: { params: Promise<{ slu
         )}
       </main>
       <div className="foot">
-        <span>Agendamento por Agenda Barber</span>
+        <span>Agendamento por {brandName()}</span>
         <Link href="/privacidade">Privacidade</Link>
       </div>
     </div>

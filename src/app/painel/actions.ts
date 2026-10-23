@@ -4,10 +4,11 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { requireActiveShop, requireShop } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { createBooking, getAvailability, type AvailabilityResult, type BookingInput, type BookingResult } from '@/lib/booking';
+import { cleanServiceIds, createBooking, getAvailability, type AvailabilityResult, type BookingInput, type BookingResult } from '@/lib/booking';
 import { parseMoneyToCents } from '@/lib/money';
 import { normalizePhone } from '@/lib/phone';
-import { isValidDate, isValidTime, localToDate, toMin, todayLocal } from '@/lib/time';
+import { isValidDate, isValidTime, isValidTimezone, localToDate, toMin, todayLocal } from '@/lib/time';
+import { REMINDER_LEADS } from '@/lib/reminders';
 import { asaasConfigured, cancelSubscription, createCustomer, createSubscription, listSubscriptionPayments, normalizeCpfCnpj } from '@/lib/asaas';
 import { firstDueDate, planPriceReais } from '@/lib/billing';
 import { NICHE_IDS, THEME_IDS } from '@/lib/themes';
@@ -24,30 +25,35 @@ function back(path: string, kind: 'ok' | 'err', msg: string, extra: Record<strin
   redirect(`${path}?${q.toString()}`);
 }
 
-const dateParam = (fd: FormData) => {
+const dateParam = (fd: FormData, tz?: string) => {
   const d = str(fd, 'd');
-  return isValidDate(d) ? d : todayLocal();
+  return isValidDate(d) ? d : todayLocal(new Date(), tz);
+};
+const validIds = (v: unknown) => {
+  const ids = cleanServiceIds(v);
+  return ids && ids.every((id) => UUID.test(id)) ? ids : null;
 };
 
 /* ---------------- Agenda ---------------- */
 
 export async function setStatus(fd: FormData) {
-  const { supabase } = await requireActiveShop();
+  const { supabase, shop } = await requireActiveShop();
   const id = str(fd, 'id');
   const to = str(fd, 'to');
-  const d = dateParam(fd);
+  const d = dateParam(fd, shop.timezone);
   if (!UUID.test(id) || !['confirmed', 'done', 'noshow', 'cancelled'].includes(to)) back('/painel', 'err', 'Pedido inválido.', { d });
   const { error } = await supabase.from('appointments').update({ status: to }).eq('id', id);
   if (error) {
     back('/painel', 'err', error.code === '23P01' ? 'Não dá para desfazer: outro cliente já ocupou esse horário.' : 'Não foi possível atualizar o agendamento.', { d });
   }
   revalidatePath('/painel');
-  redirect(`/painel?d=${d}`);
+  const view = str(fd, 'view') === 'lista' ? '&view=lista' : '';
+  redirect(`/painel?d=${d}${view}`);
 }
 
 export async function addBlock(fd: FormData) {
   const { supabase, shop } = await requireActiveShop();
-  const d = dateParam(fd);
+  const d = dateParam(fd, shop.timezone);
   const date = str(fd, 'date');
   const from = str(fd, 'from');
   const to = str(fd, 'to');
@@ -66,8 +72,8 @@ export async function addBlock(fd: FormData) {
   const { error } = await supabase.from('time_blocks').insert({
     shop_id: shop.id,
     professional_id: professionalId,
-    starts_at: localToDate(date, toMin(from)).toISOString(),
-    ends_at: localToDate(date, toMin(to)).toISOString(),
+    starts_at: localToDate(date, toMin(from), shop.timezone).toISOString(),
+    ends_at: localToDate(date, toMin(to), shop.timezone).toISOString(),
     reason,
   });
   if (error) back('/painel', 'err', 'Não foi possível bloquear o horário.', { d });
@@ -75,31 +81,41 @@ export async function addBlock(fd: FormData) {
 }
 
 export async function deleteBlock(fd: FormData) {
-  const { supabase } = await requireActiveShop();
+  const { supabase, shop } = await requireActiveShop();
   const id = str(fd, 'id');
-  const d = dateParam(fd);
+  const d = dateParam(fd, shop.timezone);
   if (UUID.test(id)) await supabase.from('time_blocks').delete().eq('id', id);
   back('/painel', 'ok', 'Bloqueio removido.', { d });
 }
 
+export async function deleteWaitlist(fd: FormData) {
+  const { supabase, shop } = await requireActiveShop();
+  const id = str(fd, 'id');
+  const d = dateParam(fd, shop.timezone);
+  if (UUID.test(id)) await supabase.from('waitlist').delete().eq('id', id);
+  back('/painel', 'ok', 'Removido da lista de espera.', { d });
+}
+
 /* ---------------- Novo agendamento (pelo dono) ---------------- */
 
-export async function ownerAvailabilityAction(serviceId: string, professionalId: string): Promise<AvailabilityResult> {
+export async function ownerAvailabilityAction(serviceIds: string[], professionalId: string): Promise<AvailabilityResult> {
   const { shop } = await requireActiveShop();
-  if (!UUID.test(String(serviceId)) || !(professionalId === 'any' || UUID.test(String(professionalId)))) return { ok: false, error: 'Pedido inválido.' };
-  return getAvailability(createAdminClient(), shop, { serviceId, professionalId, days: 30, minLeadMin: 0 });
+  const ids = validIds(serviceIds);
+  if (!ids || !(professionalId === 'any' || UUID.test(String(professionalId)))) return { ok: false, error: 'Pedido inválido.' };
+  return getAvailability(createAdminClient(), shop, { serviceIds: ids, professionalId, days: 30, minLeadMin: 0 });
 }
 
 export async function ownerBookAction(input: BookingInput & { hp?: string }): Promise<BookingResult> {
   const { shop } = await requireActiveShop();
-  if (!UUID.test(String(input?.serviceId)) || !(input.professionalId === 'any' || UUID.test(String(input.professionalId)))) {
+  const ids = validIds(input?.serviceIds);
+  if (!ids || !(input.professionalId === 'any' || UUID.test(String(input.professionalId)))) {
     return { ok: false, error: 'Pedido inválido.' };
   }
   const result = await createBooking(
     createAdminClient(),
     shop,
     {
-      serviceId: input.serviceId,
+      serviceIds: ids,
       professionalId: input.professionalId,
       date: String(input.date ?? ''),
       time: String(input.time ?? ''),
@@ -157,26 +173,46 @@ export async function toggleService(fd: FormData) {
 
 /* ---------------- Equipe ---------------- */
 
-export async function addProfessional(fd: FormData) {
-  const { supabase, shop } = await requireActiveShop();
+/** Lê o formulário do profissional: nome, dias, jornada, almoço e serviços que faz. */
+async function readProfessional(fd: FormData, shopId: string, supabase: Awaited<ReturnType<typeof requireActiveShop>>['supabase']) {
   const name = str(fd, 'name').replace(/\s+/g, ' ');
   const d = days(fd);
-  if (name.length < 1 || name.length > 60) back('/painel/equipe', 'err', 'Digite o nome do profissional.');
-  if (!d.length) back('/painel/equipe', 'err', 'Marque pelo menos um dia de trabalho.');
-  const { error } = await supabase.from('professionals').insert({ shop_id: shop.id, name, work_days: d });
+  const t = (k: string) => (isValidTime(str(fd, k)) ? str(fd, k) : null);
+  const start = t('start'), end = t('end');
+  const breakStart = t('break_start'), breakEnd = t('break_end');
+  if (name.length < 1 || name.length > 60) return 'Digite o nome do profissional.';
+  if (!d.length) return 'Marque pelo menos um dia de trabalho.';
+  if (start && end && toMin(start) >= toMin(end)) return 'O horário de entrada precisa ser antes da saída.';
+  if (Boolean(breakStart) !== Boolean(breakEnd)) return 'Preencha o início e o fim do almoço (ou deixe os dois vazios).';
+  if (breakStart && breakEnd && toMin(breakStart) >= toMin(breakEnd)) return 'O almoço precisa terminar depois de começar.';
+  const picked = fd.getAll('services').map(String).filter((id) => UUID.test(id));
+  const { data: all } = await supabase.from('services').select('id').eq('shop_id', shopId);
+  const allIds = ((all ?? []) as { id: string }[]).map((x) => x.id);
+  const chosen = picked.filter((id) => allIds.includes(id));
+  if (allIds.length && !chosen.length) return 'Marque pelo menos um serviço que o profissional faz.';
+  return {
+    name, work_days: d, start_time: start, end_time: end, break_start: breakStart, break_end: breakEnd,
+    // todos marcados = "faz todos" (inclusive os serviços que forem criados depois)
+    service_ids: chosen.length === allIds.length ? null : chosen,
+  };
+}
+
+export async function addProfessional(fd: FormData) {
+  const { supabase, shop } = await requireActiveShop();
+  const v = await readProfessional(fd, shop.id, supabase);
+  if (typeof v === 'string') back('/painel/equipe', 'err', v);
+  const { error } = await supabase.from('professionals').insert({ shop_id: shop.id, ...v });
   if (error) back('/painel/equipe', 'err', 'Não foi possível adicionar o profissional.');
   back('/painel/equipe', 'ok', 'Profissional adicionado.');
 }
 
 export async function saveProfessional(fd: FormData) {
-  const { supabase } = await requireActiveShop();
+  const { supabase, shop } = await requireActiveShop();
   const id = str(fd, 'id');
-  const name = str(fd, 'name').replace(/\s+/g, ' ');
-  const d = days(fd);
   if (!UUID.test(id)) back('/painel/equipe', 'err', 'Pedido inválido.');
-  if (name.length < 1 || name.length > 60) back('/painel/equipe', 'err', 'Digite o nome do profissional.');
-  if (!d.length) back('/painel/equipe', 'err', 'Marque pelo menos um dia de trabalho.');
-  const { error } = await supabase.from('professionals').update({ name, work_days: d }).eq('id', id);
+  const v = await readProfessional(fd, shop.id, supabase);
+  if (typeof v === 'string') back('/painel/equipe', 'err', v);
+  const { error } = await supabase.from('professionals').update(v).eq('id', id);
   if (error) back('/painel/equipe', 'err', 'Não foi possível salvar.');
   back('/painel/equipe', 'ok', 'Profissional salvo.');
 }
@@ -199,6 +235,11 @@ export async function saveSettings(fd: FormData) {
   const close = str(fd, 'close');
   const slot = Number(str(fd, 'slot'));
   const loyalty = Number(str(fd, 'loyalty'));
+  const timezone = str(fd, 'timezone');
+  const windowDays = Number(str(fd, 'window'));
+  const lead = Number(str(fd, 'lead'));
+  const cancelHours = Number(str(fd, 'cancel'));
+  const reminderLead = Number(str(fd, 'reminder_lead'));
   const d = days(fd);
   const phone = phoneRaw ? normalizePhone(phoneRaw) : null;
   if (name.length < 2 || name.length > 80) back('/painel/configuracoes', 'err', 'Digite o nome do seu negócio.');
@@ -207,11 +248,18 @@ export async function saveSettings(fd: FormData) {
   if (![15, 30, 60].includes(slot)) back('/painel/configuracoes', 'err', 'Escolha o intervalo entre horários.');
   if (!Number.isInteger(loyalty) || loyalty < 2 || loyalty > 50) back('/painel/configuracoes', 'err', 'A fidelidade precisa ser entre 2 e 50 visitas.');
   if (!d.length) back('/painel/configuracoes', 'err', 'Marque pelo menos um dia de funcionamento.');
+  if (!isValidTimezone(timezone)) back('/painel/configuracoes', 'err', 'Escolha o fuso horário.');
+  if (![7, 14, 21, 30, 45, 60].includes(windowDays)) back('/painel/configuracoes', 'err', 'Escolha até quantos dias à frente o cliente pode agendar.');
+  if (![0, 15, 30, 60, 120, 240, 720, 1440].includes(lead)) back('/painel/configuracoes', 'err', 'Escolha a antecedência mínima.');
+  if (![0, 1, 2, 4, 12, 24, 48].includes(cancelHours)) back('/painel/configuracoes', 'err', 'Escolha o prazo para remarcar ou cancelar.');
+  if (!(REMINDER_LEADS as readonly number[]).includes(reminderLead)) back('/painel/configuracoes', 'err', 'Escolha o lembrete do dia.');
   const { error } = await supabase
     .from('shops')
     .update({
       name, phone, open_time: open, close_time: close, slot_minutes: slot, loyalty_target: loyalty, open_days: d,
       whatsapp_enabled: fd.get('whatsapp') === 'on',
+      timezone, booking_window_days: windowDays, min_lead_min: lead, cancel_hours: cancelHours,
+      reminder_day_before: fd.get('day_before') === 'on', reminder_lead_min: reminderLead,
     })
     .eq('id', shop.id);
   if (error) back('/painel/configuracoes', 'err', 'Não foi possível salvar.');

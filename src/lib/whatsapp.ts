@@ -1,6 +1,6 @@
 // Envio de mensagens pelo WhatsApp Business Platform (Cloud API da Meta).
 // Mensagens automáticas fora de uma conversa aberta precisam usar MODELOS aprovados pela Meta.
-// Os textos dos dois modelos estão no README.
+// Os textos dos modelos estão no README.
 import { firstName, toWhatsappNumber } from './phone';
 import { longDayLabel } from './time';
 
@@ -16,7 +16,12 @@ export function cleanParam(s: string): string {
   return (t || '-').slice(0, 120);
 }
 
-export async function sendTemplate(toDigits: string, template: string, params: string[]): Promise<SendResult> {
+export async function sendTemplate(
+  toDigits: string,
+  template: string,
+  params: string[],
+  opts: { buttonUrlParam?: string } = {},
+): Promise<SendResult> {
   if (!whatsappConfigured()) return { ok: false, error: 'WhatsApp não configurado' };
   const version = process.env.WHATSAPP_API_VERSION || 'v23.0';
   const url = `https://graph.facebook.com/${version}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
@@ -27,7 +32,13 @@ export async function sendTemplate(toDigits: string, template: string, params: s
     template: {
       name: template,
       language: { code: process.env.WHATSAPP_TEMPLATE_LANG || 'pt_BR' },
-      components: [{ type: 'body', parameters: params.map((text) => ({ type: 'text', text: cleanParam(text) })) }],
+      components: [
+        { type: 'body', parameters: params.map((text) => ({ type: 'text', text: cleanParam(text) })) },
+        // Modelos de autenticação têm o botão "Copiar código", que também recebe o código.
+        ...(opts.buttonUrlParam
+          ? [{ type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: cleanParam(opts.buttonUrlParam) }] }]
+          : []),
+      ],
     },
   };
   try {
@@ -57,30 +68,44 @@ export type MessageData = {
   time: string; // HH:MM
   today: string; // AAAA-MM-DD
   shopContact?: string; // telefone da barbearia já formatado; se faltar, usa o nome
+  manageUrl?: string; // link para o cliente confirmar presença, remarcar ou cancelar
 };
 
 export const templateNames = () => ({
-  confirmation: process.env.WHATSAPP_TEMPLATE_CONFIRMATION || 'agendamento_confirmado',
+  confirmation: process.env.WHATSAPP_TEMPLATE_CONFIRMATION || 'agendamento_confirmado_v2',
   reminder: process.env.WHATSAPP_TEMPLATE_REMINDER || 'lembrete_agendamento',
+  dayBefore: process.env.WHATSAPP_TEMPLATE_DAY_BEFORE || 'lembrete_vespera',
+  code: process.env.WHATSAPP_TEMPLATE_CODE || 'codigo_verificacao',
 });
 
-/** Modelo 1: {{1}} nome, {{2}} barbearia, {{3}} serviço, {{4}} profissional, {{5}} dia, {{6}} hora, {{7}} contato da barbearia */
+/** Link do cliente, ou o contato da barbearia se o link não existir. */
+const linkOrContact = (d: MessageData) => d.manageUrl || d.shopContact || d.shopName;
+
+/** Modelo de confirmação: {{1}} nome, {{2}} barbearia, {{3}} serviço, {{4}} profissional, {{5}} dia, {{6}} hora, {{7}} link */
 export function confirmationParams(d: MessageData): string[] {
-  return [firstName(d.clientName), d.shopName, d.serviceName, d.proName, longDayLabel(d.date, d.today), d.time, d.shopContact || d.shopName];
+  return [firstName(d.clientName), d.shopName, d.serviceName, d.proName, longDayLabel(d.date, d.today), d.time, linkOrContact(d)];
 }
 
-/** Modelo 2: {{1}} nome, {{2}} barbearia, {{3}} serviço, {{4}} hora */
+/** Lembrete do dia: {{1}} nome, {{2}} barbearia, {{3}} serviço, {{4}} hora */
 export function reminderParams(d: MessageData): string[] {
   return [firstName(d.clientName), d.shopName, d.serviceName, d.time];
 }
 
+/** Lembrete da véspera: mesmos 7 parâmetros da confirmação. */
+export const dayBeforeParams = confirmationParams;
+
 /** Texto equivalente, para o link manual do painel (wa.me). */
 export function confirmationText(d: MessageData): string {
-  const [n, shop, svc, pro, day, time, contact] = confirmationParams(d);
-  return `Olá, ${n}! Seu horário em ${shop} está confirmado: ${svc} com ${pro}, ${day} às ${time}. Para remarcar ou cancelar, fale pelo contato: ${contact}. Até lá!`;
+  const [n, shop, svc, pro, day, time, link] = confirmationParams(d);
+  return `Olá, ${n}! Seu horário em ${shop} está confirmado: ${svc} com ${pro}, ${day} às ${time}. Para confirmar presença, remarcar ou cancelar: ${link}`;
 }
 
 export function reminderText(d: MessageData): string {
   const [n, shop, svc, time] = reminderParams(d);
   return `Oi, ${n}! Lembrete: seu horário em ${shop} (${svc}) é hoje às ${time}. Te esperamos!`;
+}
+
+export function dayBeforeText(d: MessageData): string {
+  const [n, shop, svc, pro, day, time, link] = dayBeforeParams(d);
+  return `Oi, ${n}! Lembrete: ${day} às ${time} você tem ${svc} com ${pro} em ${shop}. Confirme sua presença ou remarque aqui: ${link}`;
 }

@@ -2,7 +2,8 @@
 -- Agenda Barber - estrutura do banco de dados (Supabase / PostgreSQL)
 --
 -- Como usar: no Supabase, abra "SQL Editor", clique em "New query",
--- cole TODO este arquivo e clique em "Run". Pode rodar uma vez só.
+-- cole TODO este arquivo e clique em "Run". Pode rodar de novo quando
+-- atualizar o sistema: ele só acrescenta o que ainda não existe.
 --
 -- Ideia central: cada barbearia (shop) é um "inquilino". O dono só
 -- enxerga as linhas da própria barbearia (Row Level Security). A página
@@ -143,8 +144,6 @@ create index if not exists services_shop_idx      on public.services (shop_id);
 create index if not exists clients_shop_idx       on public.clients (shop_id);
 create index if not exists appts_shop_start_idx   on public.appointments (shop_id, starts_at);
 create index if not exists appts_client_idx       on public.appointments (client_id);
-create index if not exists appts_reminder_idx     on public.appointments (starts_at)
-  where status = 'confirmed' and reminder_sent_at is null;
 create index if not exists appts_confirmation_idx on public.appointments (created_at)
   where status = 'confirmed' and confirmation_sent_at is null;
 create index if not exists blocks_shop_start_idx  on public.time_blocks (shop_id, starts_at);
@@ -236,3 +235,183 @@ revoke update on public.appointments from authenticated;
 grant update (status) on public.appointments to authenticated;
 
 -- billing_events: já revogado acima.
+
+-- =====================================================================
+-- VERSÃO 2 (pode rodar de novo sem problema; só adiciona o que falta)
+-- Fuso por negócio, jornada e almoço por profissional, serviços por
+-- profissional, vários serviços por horário, link para o cliente
+-- remarcar/cancelar, confirmação de presença, lembrete na véspera,
+-- verificação do WhatsApp por código, limite de tentativas por IP e
+-- lista de espera.
+-- =====================================================================
+
+-- Configurações que antes eram fixas no código
+alter table public.shops add column if not exists timezone            text     not null default 'America/Sao_Paulo';
+alter table public.shops add column if not exists booking_window_days smallint not null default 14;
+alter table public.shops add column if not exists min_lead_min        smallint not null default 15;
+alter table public.shops add column if not exists cancel_hours        smallint not null default 2;
+alter table public.shops add column if not exists reminder_day_before boolean  not null default true;
+alter table public.shops add column if not exists reminder_lead_min   smallint not null default 120;  -- 0 = sem lembrete no dia
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'shops_v2_checks') then
+    alter table public.shops add constraint shops_v2_checks check (
+      timezone in ('America/Sao_Paulo', 'America/Manaus', 'America/Cuiaba', 'America/Rio_Branco', 'America/Noronha')
+      and booking_window_days between 1 and 60
+      and min_lead_min between 0 and 1440
+      and cancel_hours between 0 and 72
+      and reminder_lead_min in (0, 30, 60, 120, 180)
+    );
+  end if;
+end $$;
+
+-- Jornada e almoço de cada profissional (vazio = segue o horário do negócio / sem almoço fixo)
+-- service_ids vazio (null) = faz todos os serviços
+alter table public.professionals add column if not exists start_time  time;
+alter table public.professionals add column if not exists end_time    time;
+alter table public.professionals add column if not exists break_start time;
+alter table public.professionals add column if not exists break_end   time;
+alter table public.professionals add column if not exists service_ids uuid[];
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'professionals_hours_check') then
+    alter table public.professionals add constraint professionals_hours_check check (
+      (start_time is null or end_time is null or start_time < end_time)
+      and ((break_start is null) = (break_end is null))
+      and (break_start is null or break_start < break_end)
+    );
+  end if;
+end $$;
+
+-- Agendamento: vários serviços, link do cliente, presença, quando mandar cada lembrete
+alter table public.appointments add column if not exists service_ids              uuid[];
+alter table public.appointments add column if not exists manage_token             text;
+alter table public.appointments add column if not exists presence                 text;
+alter table public.appointments add column if not exists presence_at              timestamptz;
+alter table public.appointments add column if not exists cancelled_by             text;
+alter table public.appointments add column if not exists reminder_due_at          timestamptz;
+alter table public.appointments add column if not exists day_reminder_due_at      timestamptz;
+alter table public.appointments add column if not exists day_reminder_sent_at     timestamptz;
+alter table public.appointments add column if not exists day_reminder_attempts    smallint not null default 0;
+alter table public.appointments add column if not exists day_reminder_error       text;
+
+update public.appointments
+   set manage_token = replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')
+ where manage_token is null;
+alter table public.appointments alter column manage_token set default replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '');
+alter table public.appointments alter column manage_token set not null;
+update public.appointments set service_ids = array[service_id] where service_ids is null and service_id is not null;
+-- Horários já marcados continuam recebendo o lembrete de 30 minutos da versão anterior.
+update public.appointments
+   set reminder_due_at = starts_at - interval '30 minutes'
+ where reminder_due_at is null and reminder_sent_at is null and status = 'confirmed' and starts_at > now();
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'appointments_v2_checks') then
+    alter table public.appointments add constraint appointments_v2_checks check (
+      (presence is null or presence in ('yes', 'no'))
+      and (cancelled_by is null or cancelled_by in ('client', 'owner'))
+    );
+  end if;
+end $$;
+
+create unique index if not exists appts_manage_token_idx on public.appointments (manage_token);
+create index if not exists appts_reminder_due_idx on public.appointments (reminder_due_at)
+  where status = 'confirmed' and reminder_sent_at is null;
+create index if not exists appts_day_reminder_due_idx on public.appointments (day_reminder_due_at)
+  where status = 'confirmed' and day_reminder_sent_at is null;
+drop index if exists public.appts_reminder_idx;
+
+-- Códigos de verificação do WhatsApp (o código em si nunca é guardado, só um hash)
+create table if not exists public.phone_verifications (
+  id          uuid primary key default gen_random_uuid(),
+  shop_id     uuid not null references public.shops (id) on delete cascade,
+  phone       text not null check (phone ~ '^[0-9]{10,11}$'),
+  code_hash   text not null,
+  attempts    smallint not null default 0,
+  expires_at  timestamptz not null,
+  verified_at timestamptz,
+  created_at  timestamptz not null default now()
+);
+create index if not exists phone_verifications_lookup_idx on public.phone_verifications (shop_id, phone, created_at desc);
+
+-- Limite de tentativas (por IP, por telefone...). Só o servidor usa.
+create table if not exists public.rate_limits (
+  key          text primary key,
+  window_start timestamptz not null,
+  hits         integer not null
+);
+
+create or replace function public.hit_rate_limit(p_key text, p_window_seconds integer, p_max integer)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_hits integer;
+begin
+  insert into public.rate_limits as r (key, window_start, hits)
+  values (p_key, now(), 1)
+  on conflict (key) do update set
+    hits = case when r.window_start < now() - make_interval(secs => p_window_seconds) then 1 else r.hits + 1 end,
+    window_start = case when r.window_start < now() - make_interval(secs => p_window_seconds) then now() else r.window_start end
+  returning hits into v_hits;
+  return v_hits <= p_max;
+end;
+$$;
+revoke all on function public.hit_rate_limit(text, integer, integer) from public, anon, authenticated;
+grant execute on function public.hit_rate_limit(text, integer, integer) to service_role;
+
+-- Lista de espera: quem quer ser avisado se abrir vaga num dia lotado
+create table if not exists public.waitlist (
+  id              uuid primary key default gen_random_uuid(),
+  shop_id         uuid not null references public.shops (id) on delete cascade,
+  date            date not null,
+  name            text not null check (char_length(name) between 1 and 80),
+  phone           text not null check (phone ~ '^[0-9]{10,11}$'),
+  service_ids     uuid[] not null,
+  professional_id uuid references public.professionals (id) on delete set null,
+  created_at      timestamptz not null default now(),
+  unique (shop_id, date, phone)
+);
+create index if not exists waitlist_shop_date_idx on public.waitlist (shop_id, date);
+
+alter table public.phone_verifications enable row level security;
+alter table public.rate_limits         enable row level security;
+alter table public.waitlist            enable row level security;
+revoke all on public.phone_verifications, public.rate_limits, public.waitlist from anon;
+revoke all on public.phone_verifications, public.rate_limits from authenticated;
+-- phone_verifications e rate_limits: sem política = só o servidor acessa.
+
+drop policy if exists waitlist_select on public.waitlist;
+create policy waitlist_select on public.waitlist for select to authenticated using (public.owns_shop(shop_id));
+drop policy if exists waitlist_delete on public.waitlist;
+create policy waitlist_delete on public.waitlist for delete to authenticated using (public.owns_shop(shop_id));
+revoke insert, update, truncate on public.waitlist from authenticated;
+grant select, delete on public.waitlist to authenticated;
+
+-- O dono pode mudar as novas configurações (mas continua sem mexer na cobrança)
+grant update (name, phone, open_time, close_time, open_days, slot_minutes, loyalty_target, whatsapp_enabled,
+              niche, theme, welcome_text, timezone, booking_window_days, min_lead_min, cancel_hours,
+              reminder_day_before, reminder_lead_min) on public.shops to authenticated;
+
+-- Resumo por cliente, calculado no banco (a tela de clientes não precisa mais carregar tudo).
+-- security_invoker: a visão respeita as regras de acesso de quem consulta.
+create or replace view public.client_overview
+with (security_invoker = true) as
+select
+  c.id, c.shop_id, c.name, c.phone, c.wa_consent, c.created_at,
+  count(a.id) filter (where a.status = 'done')                                  as done_count,
+  count(a.id) filter (where a.status = 'noshow')                                as noshow_count,
+  coalesce(sum(a.price_cents) filter (where a.status = 'done'), 0)::bigint      as spent_cents,
+  max(a.starts_at) filter (where a.status = 'done')                             as last_visit,
+  min(a.starts_at) filter (where a.status = 'confirmed' and a.starts_at > now()) as next_visit
+from public.clients c
+left join public.appointments a on a.client_id = c.id
+group by c.id;
+revoke all on public.client_overview from anon;
+grant select on public.client_overview to authenticated;

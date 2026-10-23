@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { getOrigin, requireShop } from '@/lib/auth';
-import { fromMin, weekdayShort } from '@/lib/time';
+import { fromMin, TIMEZONES, weekdayShort } from '@/lib/time';
 import { maskPhone } from '@/lib/phone';
 import { CopyButton } from '@/components/copy-button';
 import { terms } from '@/lib/themes';
@@ -69,10 +69,51 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             <input id="loyalty" name="loyalty" type="number" min={2} max={50} defaultValue={shop.loyalty_target} required />
           </div>
         </div>
+        <div className="field">
+          <label htmlFor="timezone">Fuso horário</label>
+          <select id="timezone" name="timezone" defaultValue={shop.timezone}>
+            {TIMEZONES.map((z) => <option key={z.id} value={z.id}>{z.label}</option>)}
+          </select>
+        </div>
+
+        <h3>Regras da agenda online</h3>
+        <div className="fields">
+          <div className="field">
+            <label htmlFor="window">Cliente pode agendar até</label>
+            <select id="window" name="window" defaultValue={shop.booking_window_days}>
+              {[7, 14, 21, 30, 45, 60].map((d) => <option key={d} value={d}>{d} dias à frente</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="lead">Antecedência mínima</label>
+            <select id="lead" name="lead" defaultValue={shop.min_lead_min}>
+              {[[0, 'Nenhuma'], [15, '15 minutos'], [30, '30 minutos'], [60, '1 hora'], [120, '2 horas'], [240, '4 horas'], [720, '12 horas'], [1440, '1 dia']].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="cancel">Cliente remarca ou cancela pelo link até</label>
+            <select id="cancel" name="cancel" defaultValue={shop.cancel_hours}>
+              {[[0, 'A qualquer momento antes'], [1, '1 hora antes'], [2, '2 horas antes'], [4, '4 horas antes'], [12, '12 horas antes'], [24, '1 dia antes'], [48, '2 dias antes']].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <h3>WhatsApp</h3>
         <label className="check">
           <input type="checkbox" name="whatsapp" defaultChecked={shop.whatsapp_enabled} />
-          <span>Enviar confirmação e lembrete automáticos no WhatsApp dos clientes que aceitarem.</span>
+          <span>Enviar confirmação e lembretes automáticos no WhatsApp dos clientes que aceitarem.</span>
         </label>
+        <label className="check">
+          <input type="checkbox" name="day_before" defaultChecked={shop.reminder_day_before} />
+          <span>Lembrete na véspera (24 horas antes), com o link para confirmar presença, remarcar ou cancelar.</span>
+        </label>
+        <div className="field" style={{ maxWidth: 360 }}>
+          <label htmlFor="reminder_lead">Lembrete no dia</label>
+          <select id="reminder_lead" name="reminder_lead" defaultValue={shop.reminder_lead_min}>
+            {[[0, 'Não enviar'], [30, '30 minutos antes'], [60, '1 hora antes'], [120, '2 horas antes'], [180, '3 horas antes']].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </div>
+        <p className="note">Cada mensagem é cobrada pela Meta. As mudanças nos lembretes valem para os próximos agendamentos.</p>
         <div><button className="btn primary">Salvar</button></div>
         <p className="note">O endereço do link ({shop.slug}) não muda depois de criado, para não quebrar links já divulgados. Para trocar, fale com o suporte.</p>
       </form>
